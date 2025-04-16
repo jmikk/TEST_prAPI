@@ -1177,7 +1177,7 @@ class Hungar(commands.Cog):
     @is_gamemaster()
     async def startgame(self, ctx, npcs: int = 0, dashboard_channel: discord.TextChannel = None):
         """Start the Hunger Games (Admin only). Optionally, add NPCs."""
-        file_name = "Hunger_Games.txt"
+        cog_data_path = os.path.join(self.bot._config_dir, "Hungar")  # or use `cog_data_path = str(cog_data_path_var)` if you're using Red's data manager
         await ctx.send("HERE")
         async with aiofiles.open(file_name, mode='w') as file:
             pass
