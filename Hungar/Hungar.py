@@ -10,6 +10,7 @@ from discord import Interaction, TextStyle, SelectOption
 import aiofiles
 import traceback
 from discord.utils import get
+from redbot.core.data_manager import bundled_data_path
 
 
 
@@ -1177,8 +1178,9 @@ class Hungar(commands.Cog):
     @is_gamemaster()
     async def startgame(self, ctx, npcs: int = 0, dashboard_channel: discord.TextChannel = None):
         """Start the Hunger Games (Admin only). Optionally, add NPCs."""
-        cog_data_path = os.path.join(self.bot._config_dir, "Hungar")  # or use `cog_data_path = str(cog_data_path_var)` if you're using Red's data manager
-        await ctx.send("HERE")
+        cog_data_path = str(bundled_data_path(self))
+        file_name = os.path.join(cog_data_path, "Hunger_Games.txt")
+
         async with aiofiles.open(file_name, mode='w') as file:
             pass
         
