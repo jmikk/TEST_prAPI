@@ -10,8 +10,8 @@ from discord import Interaction, TextStyle, SelectOption
 import aiofiles
 import traceback
 from discord.utils import get
-from redbot.core.data_manager import bundled_data_path
-
+from discord import app_commands
+import math
 
 
 class EqualizerButton(Button):
@@ -102,56 +102,102 @@ class CheckGoldButton(Button):
 
         
 
+class AllTributesView(View):
+    def __init__(self, cog, pages, per_page=5):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.pages = pages
+        self.page = 0
+        self.per_page = per_page
+        self.total_pages = len(pages)
+
+        self.prev_button = Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, disabled=True)
+        self.next_button = Button(label="Next ➡️", style=discord.ButtonStyle.secondary, disabled=(self.total_pages <= 1))
+
+        self.prev_button.callback = self.prev_page
+        self.next_button.callback = self.next_page
+
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+
+    def get_embed(self):
+        embed = discord.Embed(
+            title="🏹 Hunger Games Tributes 🏹",
+            description=f"Page {self.page + 1} of {self.total_pages}\nHere are the current tributes and their stats:",
+            color=discord.Color.gold()
+        )
+
+        for field in self.pages[self.page]:
+            embed.add_field(name=field["name"], value=field["value"], inline=False)
+
+        return embed
+
+    async def update_message(self, interaction: Interaction):
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= self.total_pages - 1
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def next_page(self, interaction: Interaction):
+        if self.page < self.total_pages - 1:
+            self.page += 1
+            await self.update_message(interaction)
+
+    async def prev_page(self, interaction: Interaction):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_message(interaction)
+
+
 class ViewAllTributesButton(Button):
-    """Button to display all tribute stats in one embed."""
+    """Button to display all tribute stats with pagination."""
     def __init__(self, cog, guild):
         super().__init__(label="View All Tributes", style=discord.ButtonStyle.secondary)
         self.cog = cog
         self.guild = guild
 
     async def callback(self, interaction: Interaction):
-        """Shows all tributes' stats in a formatted embed."""
-        config = await self.cog.config.guild(self.guild).all()
-        players = config["players"]
+        try:
+            config = await self.cog.config.guild(self.guild).all()
+            players = config["players"]
 
-        if not players:
-            await interaction.response.send_message("No tributes are currently in the game.", ephemeral=True)
-            return
+            if not players:
+                await interaction.response.send_message("❌ No tributes are currently in the game.", ephemeral=True)
+                return
 
-        # Sort players by district
-        sorted_players = sorted(players.items(), key=lambda p: p[1]["district"])
+            sorted_players = sorted(players.items(), key=lambda p: p[1]["district"])
+            tribute_fields = []
 
-        embed = discord.Embed(
-            title="🏹 **Hunger Games Tributes** 🏹",
-            description="Here are the current tributes and their stats:",
-            color=discord.Color.gold()
-        )
+            for player_id, player in sorted_players:
+                # Resolve display name
+                if player_id.isdigit():
+                    member = self.guild.get_member(int(player_id))
+                    display_name = member.nick or member.name if member else player["name"]
+                else:
+                    display_name = player["name"]
 
-        for player_id, player in sorted_players:
-            # Fetch Discord member to get nickname
-            if player_id.isdigit():  # Real user
-                member = self.guild.get_member(int(player_id))
-                display_name = member.nick or member.name if member else player["name"]
-            else:  # NPCs or non-member users
-                display_name = player["name"]
+                status = "🟢 **Alive**" if player["alive"] else "🔴 **Eliminated**"
 
-            status = "🟢 **Alive**" if player["alive"] else "🔴 **Eliminated**"
-            embed.add_field(
-                name=f"District {player['district']}: {display_name}",
-                value=(
-                    f"{status}\n"
-                    f"**🛡️ Def:** {player['stats']['Def']}\n"
-                    f"**⚔️ Str:** {player['stats']['Str']}\n"
-                    f"**💪 Con:** {player['stats']['Con']}\n"
-                    f"**🧠 Wis:** {player['stats']['Wis']}\n"
-                    f"**❤️ HP:** {player['stats']['HP']}"
-                ),
-                inline=False
-            )
+                tribute_fields.append({
+                    "name": f"District {player['district']}: {display_name}",
+                    "value": (
+                        f"{status}\n"
+                        f"**🛡️ Def:** {player['stats']['Def']}\n"
+                        f"**⚔️ Str:** {player['stats']['Str']}\n"
+                        f"**💪 Con:** {player['stats']['Con']}\n"
+                        f"**🧠 Wis:** {player['stats']['Wis']}\n"
+                        f"**❤️ HP:** {player['stats']['HP']}"
+                    )
+                })
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            # Paginate into pages of 5 tributes each
+            per_page = 5
+            pages = [tribute_fields[i:i + per_page] for i in range(0, len(tribute_fields), per_page)]
 
+            view = AllTributesView(self.cog, pages, per_page)
+            await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Error: `{type(e).__name__}: {e}`", ephemeral=True)
 
 
 class GameMasterView(View):
@@ -560,6 +606,56 @@ class SponsorButton(Button):
 
 
 
+class BidRankingView(View):
+    def __init__(self, cog, pages, per_page=5):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.pages = pages
+        self.per_page = per_page
+        self.page = 0
+        self.total_pages = len(pages)
+
+        self.prev_button = Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, disabled=True)
+        self.next_button = Button(label="Next ➡️", style=discord.ButtonStyle.secondary, disabled=(self.total_pages <= 1))
+
+        self.prev_button.callback = self.prev_page
+        self.next_button.callback = self.next_page
+
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+
+    def get_embed(self):
+        embed = discord.Embed(
+            title="🏅 Tribute Betting Rankings 🏅",
+            description=f"Page {self.page + 1} of {self.total_pages}",
+            color=discord.Color.gold()
+        )
+
+        for field in self.pages[self.page]:
+            embed.add_field(
+                name=field["name"],
+                value=field["value"],
+                inline=False
+            )
+
+        return embed
+
+    async def update_message(self, interaction: Interaction):
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= self.total_pages - 1
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def next_page(self, interaction: Interaction):
+        if self.page < self.total_pages - 1:
+            self.page += 1
+            await self.update_message(interaction)
+
+    async def prev_page(self, interaction: Interaction):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_message(interaction)
+
+
 class ViewBidsButton(Button):
     def __init__(self, cog):
         super().__init__(label="View Bids", style=discord.ButtonStyle.secondary)
@@ -571,29 +667,26 @@ class ViewBidsButton(Button):
             players = await self.cog.config.guild(guild).players()
             all_users = await self.cog.config.all_users()
 
-            # Calculate total bets on each tribute
             bid_totals = {}
-            bet_details = {}  # Store detailed bet info for each tribute
+            bet_details = {}
 
             for player_id, player_data in players.items():
-                if not player_data["alive"]:
+                if not player_data.get("alive"):
                     continue
 
                 tribute_bets = player_data.get("bets", {})
                 total_bets = 0
                 details = []
 
-                # Include user bets
                 for user_id, user_data in all_users.items():
                     bets = user_data.get("bets", {})
                     if player_id in bets:
                         bet_amount = bets[player_id]["amount"]
                         total_bets += bet_amount
                         member = guild.get_member(int(user_id))
-                        if member:
-                            details.append(f"{member.nick}: {bet_amount} Wellcoins")
+                        display_name = member.nick or member.name if member else f"User {user_id}"
+                        details.append(f"{display_name}: {bet_amount} Wellcoins")
 
-                # Include AI bets
                 ai_bets = tribute_bets.get("AI", [])
                 for ai_bet in ai_bets:
                     total_bets += ai_bet["amount"]
@@ -603,45 +696,41 @@ class ViewBidsButton(Button):
                     bid_totals[player_id] = total_bets
                     bet_details[player_id] = details
 
-            # Sort tributes by total bets
-            sorted_tributes = sorted(
-                bid_totals.items(),
-                key=lambda item: item[1],
-                reverse=True
-            )
+            sorted_tributes = sorted(bid_totals.items(), key=lambda item: item[1], reverse=True)
 
-            # Create embed
-            embed = discord.Embed(
-                title="🏅 Tribute Betting Rankings 🏅",
-                description="Ranking of living tributes based on total bets placed.",
-                color=discord.Color.gold()
-            )
-
+            # Paginate into chunks
+            fields_per_page = 5
+            all_fields = []
             for rank, (tribute_id, total_bet) in enumerate(sorted_tributes, start=1):
                 tribute = players.get(tribute_id)
-                if not tribute["alive"]:
-                    continue  # Skip dead tributes
-                district = tribute["district"]
-
-                # Determine display name (nickname or stored name for NPCs)
-                if tribute_id.isdigit():  # Real user
-                    member = guild.get_member(int(tribute_id))
-                    tribute_name = member.display_name if member else tribute["name"]
-                else:  # NPC
-                    tribute_name = tribute["name"]
-
-                # Format detailed bets
-                details_text = "\n".join(bet_details[tribute_id])
-
-                embed.add_field(
-                    name=f"#{rank} {tribute_name} (District {district})",
-                    value=f"Total Bets: {total_bet} Wellcoins\n{details_text}",
-                    inline=False
+                if not tribute or not tribute.get("alive"):
+                    continue
+                district = tribute.get("district", "?")
+                tribute_name = (
+                    guild.get_member(int(tribute_id)).display_name
+                    if tribute_id.isdigit() and guild.get_member(int(tribute_id))
+                    else tribute.get("name", f"Unknown [{tribute_id}]")
                 )
+                details_text = "\n".join(bet_details[tribute_id]) or "No individual breakdown."
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+                all_fields.append({
+                    "name": f"#{rank} {tribute_name} (District {district})",
+                    "value": f"Total Bets: {total_bet} Wellcoins\n{details_text}"
+                })
+
+            if not all_fields:
+                await interaction.response.send_message("❌ No bets have been placed yet.", ephemeral=True)
+                return
+
+            # Chunk into pages
+            pages = [all_fields[i:i + fields_per_page] for i in range(0, len(all_fields), fields_per_page)]
+
+            view = BidRankingView(self.cog, pages)
+            await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
+
         except Exception as e:
-            await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
+            await interaction.response.send_message(f"⚠️ Error: `{type(e).__name__}: {e}`", ephemeral=True)
+
 
 
 
@@ -653,163 +742,60 @@ class BettingButton(Button):
         self.cog = cog
 
     async def callback(self, interaction: Interaction):
-        try:
-            guild = interaction.guild
-            players = await self.cog.config.guild(guild).players()
-
-            # Create options for tributes using nicknames or usernames
-            tribute_options = []
-            for player_id, player in players.items():
-                if player["alive"]:
-                    if player_id.isdigit():  # Check if it's a real user
-                        member = guild.get_member(int(player_id))
-                        if member:
-                            display_name = member.nick or member.name  # Use nickname or fallback to username
-                            tribute_options.append(SelectOption(label=display_name, value=player_id))
-                        else:
-                            tribute_options.append(SelectOption(label=player["name"], value=player_id))
-                    else:
-                        tribute_options.append(SelectOption(label=player["name"], value=player_id))
-
-            if not tribute_options:
-                await interaction.response.send_message("There are no tributes to bet on.", ephemeral=True)
-                return
-
-            # Create a new BettingView instance for each user
-            view = BettingView(self.cog, tribute_options, guild, interaction.user)
-            await interaction.response.send_message("Place your bet using the options below:", view=view, ephemeral=True)
-
-        except Exception as e:
-            await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
+        await interaction.response.send("To place a bid do ``/placebid`` Remember you can only bid day 0 and 1")
 
 
-class BettingView(View):
-    def __init__(self, cog, tribute_options, guild, user):
-        super().__init__(timeout=60)
+class TributeRankingView(View):
+    def __init__(self, cog, tribute_scores, per_page=10):
+        super().__init__(timeout=120)
         self.cog = cog
-        self.guild = guild
-        self.user = user
-        self.tribute_options = tribute_options
-        self.selected_tribute = None
-        self.selected_amount = None
+        self.tribute_scores = tribute_scores
+        self.per_page = per_page
+        self.page = 0
+        self.total_pages = math.ceil(len(tribute_scores) / per_page)
 
-        # Tribute selection dropdown
-        self.tribute_select = Select(
-            placeholder="Select a tribute...",
-            options=self.get_tribute_options(),
-            custom_id=f"tribute_select_{user.id}"
+        # Buttons
+        self.prev_button = Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, disabled=True)
+        self.next_button = Button(label="Next ➡️", style=discord.ButtonStyle.secondary, disabled=self.total_pages <= 1)
+
+        self.prev_button.callback = self.prev_page
+        self.next_button.callback = self.next_page
+
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
+
+    def get_embed(self):
+        start = self.page * self.per_page
+        end = start + self.per_page
+        embed = discord.Embed(
+            title="Tribute Rankings",
+            description=f"Page {self.page + 1} of {self.total_pages}",
+            color=discord.Color.gold()
         )
-        self.tribute_select.callback = self.on_tribute_select
-        self.add_item(self.tribute_select)
 
-        # Bet amount selection dropdown
-        self.amount_options = [
-            SelectOption(label="10 Wellcoins", value="1"),
-            SelectOption(label="10 Wellcoins", value="10"),
-            SelectOption(label="50 Wellcoins", value="50"),
-            SelectOption(label="100 Wellcoins", value="100"),
-            SelectOption(label="1000 Wellcoins", value="1000"),
-            SelectOption(label="10 Wellcoins", value="10000"),
-            SelectOption(label="All Wellcoins", value="all")
-        ]
-        self.amount_select = Select(
-            placeholder="Select bet amount...",
-            options=self.get_amount_options(),
-            custom_id=f"amount_select_{user.id}"
-        )
-        self.amount_select.callback = self.on_amount_select
-        self.add_item(self.amount_select)
-
-        # Confirm button
-        self.confirm_button = Button(label="Confirm Bet", style=discord.ButtonStyle.green, disabled=True)
-        self.confirm_button.callback = lambda i: asyncio.create_task(self.confirm_bet(i))
-        self.add_item(self.confirm_button)
-
-    def get_tribute_options(self):
-        """Get the tribute options with the selected value marked."""
-        return [
-            SelectOption(label=option.label, value=option.value, default=(option.value == self.selected_tribute))
-            for option in self.tribute_options
-        ]
-
-    def get_amount_options(self):
-        """Get the amount options with the selected value marked."""
-        return [
-            SelectOption(label=option.label, value=option.value, default=(option.value == self.selected_amount))
-            for option in self.amount_options
-        ]
-
-    async def on_tribute_select(self, interaction: Interaction):
-        """Handles tribute selection."""
-        self.selected_tribute = self.tribute_select.values[0]
-        await self.update_confirm_button(interaction)
-
-    async def on_amount_select(self, interaction: Interaction):
-        """Handles bet amount selection."""
-        self.selected_amount = self.amount_select.values[0]
-        await self.update_confirm_button(interaction)
-
-    async def update_confirm_button(self, interaction: Interaction):
-        """Enable the confirm button when all fields are set and update the view."""
-        all_selected = self.selected_tribute and self.selected_amount
-        self.confirm_button.disabled = not all_selected
-
-        # Update dropdowns to retain selections
-        self.tribute_select.options = self.get_tribute_options()
-        self.amount_select.options = self.get_amount_options()
-
-        # Refresh the message with updated selections
-        if interaction.response.is_done():
-            await interaction.message.edit(view=self)
-        else:
-            await interaction.response.edit_message(view=self)
-
-    async def confirm_bet(self, interaction: Interaction):
-        """Handles bet confirmation."""
-        try:
-            guild = interaction.guild
-            user_gold = await self.cog.config_gold.user(interaction.user).master_balance()
-    
-            # Determine the bet amount
-            bet_amount = user_gold if self.selected_amount == "all" else int(self.selected_amount)
-    
-            if bet_amount > user_gold:
-                await interaction.response.send_message(
-                    f"You don't have enough Wellcoins to place this bet. You have {user_gold} Wellcoins.",
-                    ephemeral=True
-                )
-                return
-    
-            # Deduct from user's balance
-            await self.cog.config_gold.user(interaction.user).master_balance.set(user_gold - bet_amount)
-    
-            # Load existing bets
-            user_bets = await self.cog.config.user(interaction.user).bets()
-    
-            # Add to existing bet or create a new one
-            if self.selected_tribute in user_bets:
-                user_bets[self.selected_tribute]["amount"] += bet_amount
-            else:
-                user_bets[self.selected_tribute] = {
-                    "amount": bet_amount,
-                    "daily_earnings": 0
-                }
-    
-            # Save updated bets
-            await self.cog.config.user(interaction.user).bets.set(user_bets)
-    
-            # Get tribute name to display
-            players = await self.cog.config.guild(guild).players()
-            tribute_name = players[self.selected_tribute]["name"]
-    
-            await interaction.response.send_message(
-                f"💰 A bet of **{bet_amount} Wellcoins** has been added to **{tribute_name}**!"
+        for rank, tribute in enumerate(self.tribute_scores[start:end], start=start + 1):
+            embed.add_field(
+                name=f"District {tribute['district']}",
+                value=f"#{rank} {tribute['name']}\nScore: {tribute['score']}",
+                inline=False
             )
-    
-        except Exception as e:
-            await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
 
+        return embed
 
+    async def update_message(self, interaction: Interaction):
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= self.total_pages - 1
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def next_page(self, interaction: Interaction):
+        if self.page < self.total_pages - 1:
+            self.page += 1
+            await self.update_message(interaction)
+
+    async def prev_page(self, interaction: Interaction):
+        if self.page > 0:
+            self.page -= 1
+            await self.update_message(interaction)
 
 class ViewTributesButton(Button):
     def __init__(self, cog):
@@ -817,44 +803,49 @@ class ViewTributesButton(Button):
         self.cog = cog
 
     async def callback(self, interaction: Interaction):
-        guild = interaction.guild
-        players = await self.cog.config.guild(guild).players()
+        try:
+            guild = interaction.guild
+            if guild is None:
+                raise ValueError("This command must be used in a server.")
 
-        # Calculate scores for each tribute
-        tribute_scores = []
-        for player_id, player in players.items():
-            if player["alive"]:
-                score = (
-                    player["stats"]["Def"]
-                    + player["stats"]["Str"]
-                    + player["stats"]["Con"]
-                    + player["stats"]["Wis"]
-                    + (player["stats"]["HP"] // 5)  # Normalize HP by dividing by 5
-                )
-                tribute_scores.append({
-                    "name": player["name"],
-                    "district": player["district"],
-                    "score": score
-                })
+            players = await self.cog.config.guild(guild).players()
+            if not players:
+                raise ValueError("No players found in the game.")
 
-        # Sort tributes by score in descending order
-        tribute_scores.sort(key=lambda x: x["score"], reverse=True)
+            # Calculate tribute scores
+            tribute_scores = []
+            for player_id, player in players.items():
+                if player.get("alive"):
+                    stats = player.get("stats", {})
+                    if not stats:
+                        raise ValueError(f"No stats found for player: {player['name']}")
 
-        # Create an embed with the rankings
-        embed = discord.Embed(
-            title="Tribute Rankings",
-            description="Ranked tributes by their calculated scores.",
-            color=discord.Color.gold()
-        )
-        for rank, tribute in enumerate(tribute_scores, start=1):
-            embed.add_field(
-                name=f"District {tribute['district']}",
-                value=f"#{rank} {tribute['name']}\n Score: {tribute['score']}",
-                inline=False
+                    score = (
+                        stats.get("Def", 0)
+                        + stats.get("Str", 0)
+                        + stats.get("Con", 0)
+                        + stats.get("Wis", 0)
+                        + (stats.get("HP", 0) // 5)
+                    )
+                    tribute_scores.append({
+                        "name": player.get("name", f"Unknown [{player_id}]"),
+                        "district": player.get("district", "?"),
+                        "score": score
+                    })
+
+            if not tribute_scores:
+                raise ValueError("No alive tributes to show.")
+
+            tribute_scores.sort(key=lambda x: x["score"], reverse=True)
+
+            view = TributeRankingView(self.cog, tribute_scores)
+            await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
+
+        except Exception as e:
+            await interaction.response.send_message(
+                f"⚠️ Something went wrong: `{type(e).__name__}: {e}`",
+                ephemeral=True
             )
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 
 class ViewStatsButton(Button):
@@ -991,7 +982,6 @@ class Hungar(commands.Cog):
 
         self.ai_manager = HungerGamesAI(self)
 
-
     async def report_error(self, channel, error):
         """Send error details to a designated channel."""
         error_message = f"An error occurred:\n```{error}```"
@@ -1031,6 +1021,92 @@ class Hungar(commands.Cog):
         """Commands for managing the Hunger Games."""
         pass
 
+    @app_commands.command(name="placebet", description="Place a bet on a tribute.")
+    @app_commands.describe(
+        tribute="Choose a living tribute",
+        amount="Amount of Wellcoins to bet (number or 'all')"
+    )
+    async def place_bet(self, interaction: Interaction, tribute: str, amount: str):
+        guild = interaction.guild
+        user = interaction.user
+
+        current_day = await self.config.guild(guild).day_counter()
+        if current_day not in (0, 1):
+            await interaction.response.send_message("❌ You can only place bets on Day 0 or Day 1.", ephemeral=True)
+            return
+
+        players = await self.config.guild(guild).players()
+
+        tribute_data = players.get(tribute)
+        if not tribute_data or not tribute_data.get("alive"):
+            await interaction.response.send_message("❌ That tribute isn't alive or doesn't exist.", ephemeral=True)
+            return
+
+        user_gold = await self.config_gold.user(user).master_balance()
+
+        if amount.lower() == "all":
+            bet_amount = user_gold
+        elif amount.isdigit():
+            bet_amount = int(amount)
+        else:
+            await interaction.response.send_message("❌ Invalid amount. Please enter a number or 'all'.", ephemeral=True)
+            return
+
+        if bet_amount <= 0 or bet_amount > user_gold:
+            await interaction.response.send_message(
+                f"❌ You don't have enough Wellcoins. Your balance: {user_gold}", ephemeral=True
+            )
+            return
+
+        # Deduct and record the bet
+        await self.config_gold.user(user).master_balance.set(user_gold - bet_amount)
+        user_bets = await self.config.user(user).bets()
+
+        if tribute in user_bets:
+            user_bets[tribute]["amount"] += bet_amount
+        else:
+            user_bets[tribute] = {"amount": bet_amount, "daily_earnings": 0}
+
+        await self.config.user(user).bets.set(user_bets)
+        await interaction.response.send_message(
+            f"💰 {user.mention} bet **{bet_amount} Wellcoins** on **{tribute_data['name']}**!")
+
+    @place_bet.autocomplete("tribute")
+    async def tribute_autocomplete(self, interaction: Interaction, current: str):
+        guild = interaction.guild
+        players = await self.config.guild(guild).players()
+        options = []
+    
+        for pid, pdata in players.items():
+            if not pdata.get("alive"):
+                continue
+    
+            # Resolve display name
+            member = guild.get_member(int(pid)) if pid.isdigit() else None
+            display_name = member.display_name if member else pdata.get("name", f"Unknown [{pid}]")
+    
+            # Get district (default to 99 for unknown to push them last)
+            try:
+                district = int(pdata.get("district", 99))
+            except (ValueError, TypeError):
+                district = 99
+    
+            label = f"[D{district}] {display_name}"
+    
+            if current.lower() in label.lower():
+                options.append({
+                    "district": district,
+                    "choice": app_commands.Choice(name=label, value=pid)
+                })
+    
+        # Sort by district number
+        sorted_options = sorted(options, key=lambda x: x["district"])
+    
+        # Return only the Choice objects (limit 25)
+        return [opt["choice"] for opt in sorted_options[:25]]
+
+
+
     @hunger.command()
     async def signup(self, ctx):
         """Sign up for the Hunger Games."""
@@ -1046,9 +1122,6 @@ class Hungar(commands.Cog):
             await ctx.send("You are already signed up!")
             return
 
-        if len(players) > 25:
-            await ctx.send("Sorry this game is full try again next time!")
-            return
 
         # 🎖️ **Assign a Role to the User**
         role_name = "Tribute"  # Change this to match your role name
@@ -1178,9 +1251,7 @@ class Hungar(commands.Cog):
     @is_gamemaster()
     async def startgame(self, ctx, npcs: int = 0, dashboard_channel: discord.TextChannel = None):
         """Start the Hunger Games (Admin only). Optionally, add NPCs."""
-        cog_data_path = str(bundled_data_path(self))
-        file_name = os.path.join(cog_data_path, "Hunger_Games.txt")
-
+        file_name = "Hunger_Games.txt"
         async with aiofiles.open(file_name, mode='w') as file:
             pass
         
@@ -1235,10 +1306,6 @@ class Hungar(commands.Cog):
                     player_data["name"] = member.mention  # Replace name with mention
                 else:
                     player_data["name"] = player_data["name"]  # Fallback to original name
-
-        if len(players) > 25: 
-            await ctx.send("Sorry only 25 people can play (this includes NPCs)")
-            return
         
         # Add AI bettors
         ai_bettors = {}
@@ -1290,8 +1357,31 @@ class Hungar(commands.Cog):
                     if member:
                         participant_list.append(f"{member.mention} from District {player['district']}")
     
+        MAX_DISCORD_MESSAGE_LENGTH = 2000
+        
         participant_announcement = "\n".join(participant_list)
-        await ctx.send(f"The Hunger Games have begun with the following participants (sorted by District):\n{participant_announcement}")
+        message_prefix = "The Hunger Games have begun with the following participants (sorted by District):\n"
+        
+        # Split safely by lines if too long
+        messages = []
+        current_message = message_prefix
+        
+        for line in participant_list:
+            # +1 for newline
+            if len(current_message) + len(line) + 1 > MAX_DISCORD_MESSAGE_LENGTH:
+                messages.append(current_message)
+                current_message = line + "\n"
+            else:
+                current_message += line + "\n"
+        
+        # Add the last message chunk
+        if current_message.strip():
+            messages.append(current_message)
+        
+        # Send each part
+        for msg in messages:
+            await ctx.send(msg)
+
 
         # 📌 Send GameMaster Dashboard **if a private channel is provided**
         if dashboard_channel:
@@ -1388,17 +1478,40 @@ class Hungar(commands.Cog):
                     if member:
                         alive_mentions.append(member.mention)
 
-        # Send the announcement with all alive participant
-        # Send the announcement
-        await ctx.send(
+        MAX_DISCORD_MESSAGE_LENGTH = 2000
+        
+        # Base message
+        base_message = (
             f"Day {config['day_counter']} begins in the Hunger Games! {alive_count} participants remain.\n"
             f"{feast_message}\n"
-            f"Alive participants: {', '.join(alive_mentions)}"
+            f"Alive participants:"
         )
+        
+        # Start building message chunks
+        messages = [base_message]
+        current_chunk = ""
+        
+        for mention in alive_mentions:
+            if len(messages[-1]) + len(current_chunk) + len(mention) + 2 > MAX_DISCORD_MESSAGE_LENGTH:
+                # Finalize the current chunk and start a new message
+                messages[-1] += f" {current_chunk.strip(', ')}"
+                current_chunk = mention + ", "
+                messages.append("")
+            else:
+                current_chunk += mention + ", "
+        
+        # Add the last chunk to the last message
+        if current_chunk:
+            messages[-1] += f" {current_chunk.strip(', ')}"
+        
+        # Send each message
+        for msg in messages:
+            await ctx.send(msg.strip())
+
         # Calculate the next day start time
         day_start = datetime.utcnow()
         alive_count = len(alive_players)
-        day_duration = max(int(alive_count) * 20 + 20,60)  
+        day_duration = min(max(int(alive_count) * 20 + 20,60),300)
         day_counter = config.get("day_counter", 0)
         if day_counter > 0 and day_counter % 10 == 0:
             day_duration = int(day_duration * 1.5)  # Feast days are longer
@@ -1471,13 +1584,13 @@ class Hungar(commands.Cog):
     
         # Send elimination leaderboard
         if leaderboard:
-            leaderboard.sort(key=lambda x: x["day"])
+            leaderboard.sort(key=lambda x: x["day"], reverse=True)
             elim_embed = discord.Embed(
                 title="🏅 Elimination Leaderboard 🏅",
                 description="Here are the players eliminated so far:",
                 color=discord.Color.red(),
             )
-            for entry in leaderboard:
+            for entry in leaderboard[:25]:
                 elim_embed.add_field(
                     name=f"Day {entry['day']}",
                     value=f"{entry['name']}",
@@ -1486,12 +1599,13 @@ class Hungar(commands.Cog):
             await ctx.send(embed=elim_embed)
     
             # Kill leaderboard
-            sorted_players = sorted(players.values(), key=lambda p: len(p["kill_list"]), reverse=True)
+            sorted_players = sorted(players.values(), key=lambda p: len(p["kill_list"]), reverse=True)[:25]
             kill_embed = discord.Embed(
                 title="🏆 Kill Leaderboard 🏆",
                 description="Here are the top killers:",
                 color=discord.Color.gold(),
             )
+            sorted_players = sorted_players[:25]
             for i, player in enumerate(sorted_players, start=1):
                 kills = len(player["kill_list"])
                 kill_text = "kill" if kills == 1 else "kills"
@@ -1655,8 +1769,8 @@ class Hungar(commands.Cog):
             elif action == "Rest":
                 resters.append(player_id)
 
-                if player_data["stats"]["HP"] < player_data["stats"]["Con"]:
-                    damage = random.randint(1, int(player_data["stats"]["Con"] / 2))
+                if player_data["stats"]["HP"] < player_data["stats"]["Con"]*2:
+                    damage = random.randint(1, int(player_data["stats"]["Con"]))
                     player_data["stats"]["HP"] += damage
                     event_outcomes.append(f"{player_data['name']} nursed their wounds and healed for {damage} points of damage.")
                 
@@ -2040,62 +2154,6 @@ class Hungar(commands.Cog):
         embed.add_field(name="❤️ **HP**", value=f"{player['stats']['HP']}", inline=True)
     
         await ctx.send(embed=embed, ephemeral=True)
-
-
-    @hunger.command()
-    async def place_bet(self, ctx, amount: int, *, tribute: str):
-        """Place a bet on a tribute."""
-
-        if not ("<" in tribute):
-            tribute = f"**{tribute}**"
-
-        tribute = tribute.strip()  # Clean up any extra spaces        
-        
-        if amount <= 0:
-            await ctx.send("Bet amount must be greater than zero.")
-            return
-    
-        user_gold = await self.config_gold.user(ctx.author).master_balance()
-        if amount > user_gold:
-            await ctx.send("You don't have enough Wellcoins to place that bet. You can always play in the games to earn money or chat a little in the server.")
-            return
-    
-        guild = ctx.guild
-        players = await self.config.guild(guild).players()
-        tribute = tribute.lower()
-
-        config = await self.config.guild(guild).all()
-        
-        day_counter = config.get("day_counter", 0)
-
-        # Restrict betting to days 1 and 2
-        if day_counter > 1:
-            await ctx.send("Betting is only allowed on Day 0 and Day 1.")
-            return
-    
-        # Validate tribute
-        tribute_id = next((pid for pid, pdata in players.items() if pdata["name"].lower() == tribute), None)
-        if not tribute_id:
-            await ctx.send("Tribute not found. Please check the name and try again.")
-            return
-    
-        # Save the bet
-        user_bets = await self.config.user(ctx.author).bets()
-        if tribute_id in user_bets:
-            await ctx.send("You have already placed a bet on this tribute.")
-            return
-    
-        user_bets[tribute_id] = {
-            "amount": amount,
-            "daily_earnings": 0
-        }
-        await self.config.user(ctx.author).bets.set(user_bets)
-    
-        # Deduct gold
-        await self.config_gold.user(ctx.author).master_balance.set(user_gold - amount)
-    
-        tribute_name = players[tribute_id]["name"]
-        await ctx.send(f"{ctx.author.mention} has placed a bet of {amount} Wellcoins on {tribute_name}. Good luck!")
     
     @hunger.command()
     async def check_wellcoins(self, ctx):
